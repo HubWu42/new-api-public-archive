@@ -1,5 +1,7 @@
 # 生产集群。生产的 Argo CD Application 跟本仓 main；镜像 tag 由 release-image.yml
 # 在正式 tag 的镜像构建完之后回写进来（回滚时手动触发它回写旧版本），不手改。
+# 下面的 patch 把服务放在国内区域：只连本区域的库（ADR-0005 D1/D7）。
+# 本文件按 kustomize edit 的输出格式书写，CI 回写只改 newTag 一行。
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 # 生成的 ConfigMap 要和 base 里的对象在同一个命名空间，引用它的名字才会被改成带哈希的那个
@@ -17,7 +19,6 @@ configMapGenerator:
   - REDIS_ADDR=redis.data-cn.svc.cluster.local:6379
   - REDIS_DB=1
   name: linksail-env
-  # 国内区域：服务只连本区域的库（D1/D7）
 patches:
 - patch: |-
     - op: add
