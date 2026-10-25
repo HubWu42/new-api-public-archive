@@ -67,7 +67,7 @@ bash scripts/release-tag.sh
 | 文件 | 事件条件与处理 |
 | --- | --- |
 | `deploy-test.yml` | 我们新增：push `main`，或在 `main` 上手动触发（`workflow_dispatch`，选其他分支会直接失败）时，构建 `main-<短 sha>` 镜像、把它写回 `overlays/test` 并通知 Argo CD。不响应 tag push；写回用 `GITHUB_TOKEN` 推送，不会再次触发任何工作流。 |
-| `release-image.yml` | 我们新增：push tags `v*`，正式日期 tag 与 `-dry.N` 都命中；构建多架构镜像，正式 tag 再把版本写回 `overlays/prod` 并通知 Argo CD。另有 `workflow_dispatch` 输入已发布的正式 tag，只写回 `overlays/prod`（回滚），只能选 `main`。写回同样用 `GITHUB_TOKEN`，与 `deploy-test.yml` 的写回排在同一个 concurrency 组里。 |
+| `release-image.yml` | 我们新增：push tags `v*`，正式日期 tag 与 `-dry.N` 都命中；构建多架构镜像，正式 tag 再把版本写回 `overlays/prod` 并通知 Argo CD。另有 `workflow_dispatch` 输入已发布的正式 tag，只写回 `overlays/prod`（回滚），只能选 `main`。写回同样用 `GITHUB_TOKEN`，和 `deploy-test.yml` 的写回同时推 `main` 被拒时各自 rebase 重推。 |
 | `docker-image-branch.yml` | 仅 `workflow_dispatch`，保持启用，不由 tag push 触发。 |
 | `electron-build.yml` | push tags `*`、`!*-*`、`!*-alpha*`，另有 `workflow_dispatch`；`!*-*` 排除含 `-r1` 的日期 tag，保持启用。 |
 | `ci.yml` | `pull_request` 的 opened/synchronize/closed，不响应 tag push。 |

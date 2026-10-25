@@ -110,7 +110,7 @@ node deploy/scripts/secrets.js diff --cluster prod --map project/new-api/deploy/
    | `manifest` | 合成多架构的日期 tag，正式版另刷 `latest`；再在镜像里搜一遍发布标识，搜不到就整条失败 |
    | `promote` | 把这个版本写进 `main` 的 `deploy/k8s/linksail/overlays/prod/kustomization.yaml` 并推送，调 Argo CD 的 webhook；`linksail-prod` 随即部署这一版 |
 
-`promote` 推 `main` 被拒时（刚好有别的提交进来）先 rebase 再推，最多三次，三次都失败就变红等人来看。它和测试版的写回排在同一个 concurrency 组里，不会同时推 `main`；但 GitHub 的同一组里只留一个排队者，三条写回挤在同一刻时较早排队的那条会被取消，生产这条被取消时按〈回滚〉的手动触发补写一次。
+`promote` 推 `main` 被拒时（刚好有别的合并或测试版的写回进来）先 `git pull --rebase` 再推，最多五次，五次都失败就变红等人来看。两条写回改的是不同文件，rebase 不会冲突。
 
 镜像先构建好、才写进 `overlays/prod`，Argo CD 看到变化时镜像已经在 Docker Hub 上。tag 所在提交里的 `overlays/prod` 是上一版，生产实际跑的版本看 `main` 最新的 `overlays/prod`。
 

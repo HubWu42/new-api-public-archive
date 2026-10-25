@@ -103,10 +103,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # 与 release-image.yml 回写 overlays/prod 共用一组：两条回写都推 main，排队一个个来。
-    concurrency:
-      group: deploy-overlay-main
-      cancel-in-progress: false
     steps:
       - name: Check out main
         uses: actions/checkout@v4
@@ -128,8 +124,9 @@ jobs:
           fi
           # GITHUB_TOKEN 推的提交不触发 workflow，提交信息不带 [skip ci]：正式 tag 打在这个提交上也能触发发版。
           git commit -am "chore(deploy): test 环境镜像改为 ${TAG}"
-          # 两次合并挨得很近时，后一次推送会被拒；把别人的提交拉下来再推，最多三次。
-          for attempt in 1 2 3; do
+          # 和别的合并或 release-image.yml 的生产回写挨得很近时，推送会被拒；把别人的提交拉下来再推，最多五次。
+          # 两条回写改的是不同文件，rebase 不会冲突；不共用 concurrency 组，免得同组排队时互相取消。
+          for attempt in 1 2 3 4 5; do
             if git push origin HEAD:main; then
               echo "- 测试环境镜像改为 \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
               exit 0
@@ -137,7 +134,7 @@ jobs:
             echo "推送被拒，第 ${attempt} 次重试"
             git pull --rebase origin main
           done
-          echo "::error::三次都没能把测试版本号推回 main"
+          echo "::error::五次都没能把测试版本号推回 main"
           exit 1
 
       - name: Notify Argo CD
