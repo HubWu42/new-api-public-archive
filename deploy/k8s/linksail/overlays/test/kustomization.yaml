@@ -5,25 +5,26 @@ kind: Kustomization
 # 生成的 ConfigMap 要和 base 里的对象在同一个命名空间，引用它的名字才会被改成带哈希的那个
 namespace: linksail
 resources:
-  - ../../base
+- ../../base
 images:
-  - name: hubwu42/new-api
-    newTag: 2026.10.8-r2
+- name: hubwu42/new-api
+  newName: hubwu42/new-api
+  newTag: main-8fbc7e4
 configMapGenerator:
-  - name: linksail-env
-    literals:
-      - DB_HOST=pg-cn-rw.data-cn.svc.cluster.local:5432
-      - DB_NAME=newapi_test
-      - REDIS_ADDR=redis.data-cn.svc.cluster.local:6379
-      - REDIS_DB=2
+- literals:
+  - DB_HOST=pg-cn-rw.data-cn.svc.cluster.local:5432
+  - DB_NAME=newapi_test
+  - REDIS_ADDR=redis.data-cn.svc.cluster.local:6379
+  - REDIS_DB=2
+  name: linksail-env
 patches:
-  - target:
-      kind: Ingress
-      name: linksail
-    patch: |-
-      - op: replace
-        path: /spec/rules/0/host
-        value: linksail.test.gosail.tech
-      - op: replace
-        path: /spec/tls/0/hosts/0
-        value: linksail.test.gosail.tech
+- patch: |-
+    - op: replace
+      path: /spec/rules/0/host
+      value: linksail.test.gosail.tech
+    - op: replace
+      path: /spec/tls/0/hosts/0
+      value: linksail.test.gosail.tech
+  target:
+    kind: Ingress
+    name: linksail
