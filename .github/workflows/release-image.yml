@@ -100,8 +100,12 @@ jobs:
           TAG: ${{ steps.tag.outputs.image_tag }}
         run: |
           set -euo pipefail
-          if ! docker buildx imagetools inspect "${IMAGE}:${TAG}" > /dev/null; then
-            echo "::error::Docker Hub 上没有 ${IMAGE}:${TAG}，这个 tag 没发布成功过；要发这份代码就打一个新 tag"
+          if ! err=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" 2>&1 >/dev/null); then
+            if grep -qiE 'not found|manifest unknown' <<<"$err"; then
+              echo "::error::Docker Hub 上没有 ${IMAGE}:${TAG}，这个 tag 没发布成功过；要发这份代码就打一个新 tag"
+            else
+              echo "::error::查询 ${IMAGE}:${TAG} 出错（鉴权或网络），无法确认镜像存在，回滚中止：${err}"
+            fi
             exit 1
           fi
           echo "- 回滚：镜像 \`${IMAGE}:${TAG}\` 已存在，跳过构建" >> "$GITHUB_STEP_SUMMARY"
