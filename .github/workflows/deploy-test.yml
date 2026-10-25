@@ -7,6 +7,8 @@ name: Deploy test (main)
 on:
   push:
     branches: [main]
+  # 推送没触发或要补跑时手动触发；按当前 main 构建
+  workflow_dispatch:
 
 permissions:
   contents: read
