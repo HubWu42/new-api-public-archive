@@ -75,28 +75,15 @@ run_case 'dry allocation from remote maximum' 0 "Git tag: v$now-r10" --dry
 export TEST_REMOTE_TAGS="v$now-r999"
 run_case 'daily exhaustion' 1 'exhausted' --dry
 
-# 生产覆盖层：--prepare 写入下一版镜像 tag，打 tag 前必须已经写好。在一份临时仓根里跑，不碰真仓。
-repo="$fixture/repo"
-overlay=deploy/k8s/linksail/overlays/prod/kustomization.yaml
-mkdir -p "$repo/$(dirname "$overlay")"
-cp "$root/$overlay" "$repo/$overlay"
+# 默认模式只在本地打当天的下一个 tag，不读也不改 overlays/prod（版本由 CI 构建完镜像后回写）。
+# 在一个没有 deploy/ 目录的临时目录里跑，证明它不依赖覆盖层。
 export TEST_CREATED_TAGS="$fixture/created-tags"
 : > "$TEST_CREATED_TAGS"
 export TEST_LOCAL_TAGS="v$now-r2" TEST_REMOTE_TAGS="v$now-r2"
-cd "$repo"
-run_case 'create refuses unpinned overlay' 1 'Run release-tag.sh --prepare'
-[[ ! -s $TEST_CREATED_TAGS ]] || { echo 'create made a tag although the overlay was not pinned'; exit 1; }
-run_case 'prepare pins next tag' 0 "Pinned hubwu42/new-api:$now-r3" --prepare
-grep -q "newTag: $now-r3\$" "$overlay" || { echo 'prepare did not write the overlay'; exit 1; }
-[[ ! -s $TEST_CREATED_TAGS ]] || { echo 'prepare must not create a tag'; exit 1; }
-# 只改钉版本那一行，文件其余部分原样保留
-diff <(grep -v newTag: "$root/$overlay") <(grep -v newTag: "$overlay") || { echo 'prepare changed other lines'; exit 1; }
-run_case 'create after prepare' 0 "Git tag: v$now-r3"
+mkdir -p "$fixture/repo"
+cd "$fixture/repo"
+run_case 'create tags next revision without an overlay' 0 "Git tag: v$now-r3"
 [[ $(cat "$TEST_CREATED_TAGS") == "v$now-r3" ]] || { echo "create did not tag v$now-r3"; exit 1; }
-# 另一天或另一个序号已被占用时，旧的钉版本不再匹配，必须拒绝
-export TEST_REMOTE_TAGS="v$now-r3"
-run_case 'create refuses stale pin' 1 "pins hubwu42/new-api:$now-r3, not $now-r4"
-rm -f "$overlay"
-run_case 'prepare needs overlay' 1 'Production overlay not found' --prepare
+run_case 'prepare mode removed' 1 'Usage: release-tag.sh [--dry | --check <tag>]' --prepare
 cd "$root"
 printf 'All %s cases passed.\n' "$case_count"

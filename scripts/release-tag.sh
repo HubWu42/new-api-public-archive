@@ -1,41 +1,10 @@
 #!/usr/bin/env bash
 # Run from the repository root. Only the no-argument mode creates a local tag.
-# --prepare writes the next image tag into the production overlay (no tag); the
-# no-argument mode refuses to tag unless that overlay already pins the same tag.
+# 打 tag 之前不改仓库：正式 tag 推送后由 release-image.yml 构建镜像，再把版本回写进 main 的 overlays/prod。
 set -euo pipefail
 export LC_ALL=C
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
-
-# 生产环境部署的镜像版本以这一行为准：Argo CD 跟 release 分支，release 在 tag 推送后快进到 tag。
-# 所以打 tag 之前它必须已经写好并合进 main，否则 release 指向的提交部署的是旧版本。
-PROD_OVERLAY=deploy/k8s/linksail/overlays/prod/kustomization.yaml
-PROD_IMAGE=hubwu42/new-api
-
-require_overlay() {
-  [[ -f $PROD_OVERLAY ]] || fail "Production overlay not found: $PROD_OVERLAY (run from the repository root)."
-}
-
-# 读出生产覆盖层里给 hubwu42/new-api 钉的 tag（找不到则输出为空）。调用前先 require_overlay。
-pinned_tag() {
-  awk -v img="$PROD_IMAGE" '
-    $1 == "-" && $2 == "name:" { inside = ($3 == img); next }
-    inside && $1 == "newTag:" { print $2; exit }
-  ' "$PROD_OVERLAY"
-}
-
-write_pinned_tag() {
-  local image_tag=$1 tmp
-  require_overlay
-  [[ -n $(pinned_tag) ]] || fail "No newTag line for $PROD_IMAGE in $PROD_OVERLAY."
-  tmp=$(mktemp "${PROD_OVERLAY}.XXXXXX")
-  awk -v img="$PROD_IMAGE" -v tag="$image_tag" '
-    $1 == "-" && $2 == "name:" { inside = ($3 == img) }
-    inside && $1 == "newTag:" { sub(/newTag:.*/, "newTag: " tag); inside = 0 }
-    { print }
-  ' "$PROD_OVERLAY" > "$tmp"
-  mv "$tmp" "$PROD_OVERLAY"
-}
 
 # Parsed values are numeric so October sorts after September on BSD and GNU systems.
 # 解析结果经 stdout 显式返回一行：`<date> <revision> <dry>`（dry 为空即正式 tag）。
@@ -102,13 +71,12 @@ check_tag() {
 
 mode=${1:-create}
 case $mode in
-  create) (( $# == 0 )) || fail 'Usage: release-tag.sh [--dry | --prepare | --check <tag>]' ;;
+  create) (( $# == 0 )) || fail 'Usage: release-tag.sh [--dry | --check <tag>]' ;;
   --dry) (( $# == 1 )) || fail 'Usage: release-tag.sh --dry' ;;
-  --prepare) (( $# == 1 )) || fail 'Usage: release-tag.sh --prepare' ;;
   --check) (( $# == 2 )) || fail 'Usage: release-tag.sh --check <tag>'
     require_valid_tag "$2" > /dev/null
     ;;
-  *) fail 'Usage: release-tag.sh [--dry | --prepare | --check <tag>]' ;;
+  *) fail 'Usage: release-tag.sh [--dry | --check <tag>]' ;;
 esac
 load_tags
 if [[ $mode == --check ]]; then
@@ -130,16 +98,7 @@ done <<< "$all_tags"
 (( revision < 999 )) || fail "All revisions for $today are exhausted (maximum r999)."
 tag="v$today-r$((revision + 1))"
 check_tag "$tag"
-if [[ $mode == --prepare ]]; then
-  write_pinned_tag "${tag#v}"
-  printf 'Pinned %s:%s in %s\nMerge this change into main, then run release-tag.sh to create %s.\n' \
-    "$PROD_IMAGE" "${tag#v}" "$PROD_OVERLAY" "$tag"
-  exit 0
-fi
 if [[ $mode == create ]]; then
-  require_overlay
-  pinned=$(pinned_tag)
-  [[ $pinned == "${tag#v}" ]] || fail "$PROD_OVERLAY pins $PROD_IMAGE:${pinned:-<none>}, not ${tag#v}. Run release-tag.sh --prepare, merge it into main, then tag."
   git tag "$tag" || fail "Could not create local tag: $tag."
 fi
 printf 'Git tag: %s\nImage tag: %s\n' "$tag" "${tag#v}"

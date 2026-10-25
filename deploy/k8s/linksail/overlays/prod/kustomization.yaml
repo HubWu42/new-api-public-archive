@@ -1,5 +1,5 @@
-# 生产集群。镜像 tag 由 scripts/release-tag.sh --prepare 在打 tag 前写进来；
-# 生产的 Argo CD Application 跟本仓 release 分支，发版 workflow 在 tag 推送后把 release 快进到该 tag。
+# 生产集群。生产的 Argo CD Application 跟本仓 main；镜像 tag 由 release-image.yml
+# 在正式 tag 的镜像构建完之后回写进来（回滚时手动触发它回写旧版本），不手改。
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 # 生成的 ConfigMap 要和 base 里的对象在同一个命名空间，引用它的名字才会被改成带哈希的那个

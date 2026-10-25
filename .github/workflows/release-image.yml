@@ -1,29 +1,44 @@
 name: Release image (date tag)
 
-# 日期 tag 触发：校验 → 多架构构建 → 推 Docker Hub（不可变的日期 tag，另刷一个只作人肉拉取用的 latest）
-# → 把 release 分支快进到这个 tag 并通知 Argo CD 部署生产（GoSail ADR-0005）。
-# 生产部署哪一版由 deploy/k8s/linksail/overlays/prod 决定，scripts/release-tag.sh --prepare 在打 tag 前写好它。
+# 日期 tag 触发：校验 → 多架构构建 → 推 Docker Hub（不可变的日期 tag，另刷一个只作人手拉取用的 latest）
+# → 把这个版本回写进 main 的 deploy/k8s/linksail/overlays/prod 并通知 Argo CD 部署生产（GoSail ADR-0008）。
+# 手动触发输入一个已发布过的正式 tag：镜像已存在，不构建，只回写 overlays/prod，用于生产回滚。
 # 约定与调用见 fleet-doc/git.md 与 fleet-doc/ops.md，实现与它们保持一致。
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已发布过的正式 tag，例如 v2026.10.8-r1；只把它回写进 overlays/prod（回滚用）'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   IMAGE: hubwu42/new-api
-  PROD_OVERLAY: deploy/k8s/linksail/overlays/prod/kustomization.yaml
+  PROD_OVERLAY: deploy/k8s/linksail/overlays/prod
 
 jobs:
   verify:
     name: Verify tag
     runs-on: ubuntu-latest
     outputs:
+      git_tag: ${{ steps.tag.outputs.git_tag }}
       image_tag: ${{ steps.tag.outputs.image_tag }}
       is_dry: ${{ steps.tag.outputs.is_dry }}
+      rollback: ${{ steps.tag.outputs.rollback }}
     steps:
+      # 手动触发用的是所选分支上的这份文件；只认 main，免得别的分支改过的流程去写生产版本。
+      - name: Refuse non-main dispatch
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::手动触发只能选 main，当前是 ${GITHUB_REF}"
+          exit 1
+
       - name: Check out
         uses: actions/checkout@v4
         with:
@@ -32,44 +47,69 @@ jobs:
       - name: Verify tag and its source
         id: tag
         env:
-          RAW_TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # 形状、当日序号、倒序发布由脚本判定；它认 GITHUB_ACTIONS/GITHUB_REF，
-          # 对触发本次运行的那个 tag 不做「已用」判定。
-          bash scripts/release-tag.sh --check "$RAW_TAG"
+          if [ "$EVENT" = push ]; then
+            raw_tag=$PUSHED_TAG
+            # 形状、当日序号、倒序发布由脚本判定；它认 GITHUB_ACTIONS/GITHUB_REF，
+            # 对触发本次运行的那个 tag 不做「已用」判定。
+            bash scripts/release-tag.sh --check "$raw_tag"
+            sha=$GITHUB_SHA
+            echo "rollback=false" >> "$GITHUB_OUTPUT"
+          else
+            # 回滚只接受已经存在的正式 tag；它在推送时已过 --check，镜像是否真发布成功由下一步核对。
+            raw_tag=$INPUT_TAG
+            case "$raw_tag" in
+              v*-dry.*) echo "::error::干跑 tag 不能回写生产：${raw_tag}"; exit 1 ;;
+              v*) ;;
+              *) echo "::error::不是日期 tag：${raw_tag}"; exit 1 ;;
+            esac
+            sha=$(git rev-parse -q --verify "refs/tags/${raw_tag}^{commit}") \
+              || { echo "::error::仓里没有 tag ${raw_tag}"; exit 1; }
+            echo "rollback=true" >> "$GITHUB_OUTPUT"
+          fi
 
           # tag 必须切在 main 上
           git fetch --no-tags origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD
+          git merge-base --is-ancestor "$sha" FETCH_HEAD \
+            || { echo "::error::${raw_tag} 不在 main 上"; exit 1; }
 
-          image_tag="${RAW_TAG#v}"
-          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
-          case "$RAW_TAG" in
+          {
+            echo "git_tag=$raw_tag"
+            echo "image_tag=${raw_tag#v}"
+          } >> "$GITHUB_OUTPUT"
+          case "$raw_tag" in
             *-dry.*) echo "is_dry=true" >> "$GITHUB_OUTPUT" ;;
             *)       echo "is_dry=false" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      # 正式 tag 所在的提交必须已经把生产覆盖层钉到本版：release 快进到这个提交后，
-      # Argo CD 部署的就是覆盖层里写的版本。钉错了就在构建前停下，不推镜像。
-      - name: Verify the production overlay pins this release
-        if: steps.tag.outputs.is_dry != 'true'
+      - name: Log in to Docker Hub
+        if: steps.tag.outputs.rollback == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 回滚不重新构建：镜像不在说明这个 tag 当初没发布成功，回写进生产只会拉不到镜像。
+      - name: Require the release image for rollback
+        if: steps.tag.outputs.rollback == 'true'
         env:
-          IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+          TAG: ${{ steps.tag.outputs.image_tag }}
         run: |
           set -euo pipefail
-          pinned=$(awk -v img="$IMAGE" '
-            $1 == "-" && $2 == "name:" { inside = ($3 == img); next }
-            inside && $1 == "newTag:" { print $2; exit }
-          ' "$PROD_OVERLAY")
-          if [ "$pinned" != "$IMAGE_TAG" ]; then
-            echo "::error::${PROD_OVERLAY} 钉的是 ${pinned:-<空>}，不是 ${IMAGE_TAG}；先跑 scripts/release-tag.sh --prepare 并合进 main 再打 tag"
+          if ! docker buildx imagetools inspect "${IMAGE}:${TAG}" > /dev/null; then
+            echo "::error::Docker Hub 上没有 ${IMAGE}:${TAG}，这个 tag 没发布成功过；要发这份代码就打一个新 tag"
             exit 1
           fi
+          echo "- 回滚：镜像 \`${IMAGE}:${TAG}\` 已存在，跳过构建" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: Build & push (${{ matrix.arch }})
     needs: verify
+    if: needs.verify.outputs.rollback != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -114,6 +154,7 @@ jobs:
   manifest:
     name: Publish manifests
     needs: [verify, build]
+    if: needs.verify.outputs.rollback != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -139,8 +180,8 @@ jobs:
           docker buildx imagetools create -t "${IMAGE}:${TAG}" \
             "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
 
-          # `latest` 只在正式发布时刷新（干跑只留自己的日期 tag），而且它只作人肉拉取用——
-          # 部署那一步在 linksail 那边把 `docker_registry_image_tag` 钉到具体日期 tag。
+          # `latest` 只在正式发布时刷新（干跑只留自己的日期 tag），而且它只作人手拉取用——
+          # 生产部署的是 overlays/prod 里写的具体日期 tag。
           if [ "$IS_DRY" != "true" ]; then
             docker buildx imagetools create -t "${IMAGE}:latest" \
               "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
@@ -165,27 +206,56 @@ jobs:
           echo "- 版本自检通过：镜像内嵌 \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
 
   promote:
-    name: Promote release branch
+    name: Pin production overlay and notify Argo CD
     needs: [verify, manifest]
-    if: needs.verify.outputs.is_dry != 'true'
+    # 正常发布要等镜像合成并自检通过；回滚时 build 与 manifest 被跳过，镜像存在已在 verify 核对过。
+    if: >-
+      !cancelled()
+      && needs.verify.result == 'success'
+      && needs.verify.outputs.is_dry != 'true'
+      && (needs.verify.outputs.rollback == 'true' || needs.manifest.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # 与 deploy-test.yml 回写 overlays/test 共用一组：两条回写都推 main，排队一个个来。
+    concurrency:
+      group: deploy-overlay-main
+      cancel-in-progress: false
     steps:
-      - name: Check out the tag
+      - name: Check out main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      # 生产的 Argo CD Application 跟 release 分支。只快进、绝不强推：
-      # 被拒说明 release 上有不在这个 tag 历史里的提交，要人来看，不能覆盖。
-      - name: Fast-forward release to the tag
+      - name: Commit the release image tag
+        env:
+          TAG: ${{ needs.verify.outputs.image_tag }}
+          GIT_TAG: ${{ needs.verify.outputs.git_tag }}
         run: |
           set -euo pipefail
-          git push origin "${GITHUB_SHA}:refs/heads/release"
-          echo "- release 分支快进到 \`${GITHUB_SHA::7}\`（${GITHUB_REF_NAME}）" >> "$GITHUB_STEP_SUMMARY"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          (cd "$PROD_OVERLAY" && kustomize edit set image "${IMAGE}=${IMAGE}:${TAG}")
+          if git diff --quiet; then
+            echo "生产覆盖层已经是 ${TAG}，无需提交" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # GITHUB_TOKEN 推的提交不触发 workflow，提交信息不带 [skip ci]：tag 打在这个提交上也能触发发版。
+          git commit -am "chore(deploy): prod 环境镜像改为 ${TAG}（${GIT_TAG}）"
+          # 和测试版回写或别的提交挨得很近时，推送会被拒；把别人的提交拉下来再推，最多三次。
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "- 生产环境镜像改为 \`${TAG}\`（${GIT_TAG}）" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "推送被拒，第 ${attempt} 次重试"
+            git pull --rebase origin main
+          done
+          echo "::error::三次都没能把生产版本号推回 main"
+          exit 1
 
       - name: Notify Argo CD
         env:
           ARGOCD_WEBHOOK_SECRET: ${{ secrets.ARGOCD_WEBHOOK_SECRET }}
-        run: bash .github/scripts/argocd-webhook.sh release "$GITHUB_SHA"
+        run: bash .github/scripts/argocd-webhook.sh main "$(git rev-parse HEAD)"

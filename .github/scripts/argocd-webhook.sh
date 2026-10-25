@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 通知 Argo CD 立刻刷新跟着某个分支的 Application（ADR-0005 的发布流程）。
+# 通知 Argo CD 立刻刷新跟着某个分支的 Application（测试与生产都跟 main，GoSail ADR-0008）。
 #
 #   ARGOCD_WEBHOOK_SECRET=... bash .github/scripts/argocd-webhook.sh <分支名> <提交 sha>
 #
