@@ -1,9 +1,9 @@
 name: Deploy test (main)
 
-# 合并到 main 发测试版（GoSail ADR-0005）：构建 hubwu42/new-api:main-<短 sha> →
+# 合并到 main 发测试版（GoSail ADR-0008）：构建 hubwu42/new-api:main-<短 sha> →
 # 把这个 tag 提交回 deploy/k8s/linksail/overlays/test → 通知 Argo CD 同步家里测试集群。
 # CI 不直接碰集群：集群凭证不进 GitHub，版本号留在 Git 里可以重建。
-# 正式版走 release-image.yml（日期 tag），约定见 fleet-doc/git.md。
+# 正式版走 release-image.yml（日期 tag，回写 overlays/prod），约定见 fleet-doc/git.md。
 on:
   push:
     branches: [main]
@@ -122,9 +122,11 @@ jobs:
             echo "测试覆盖层已经是 ${TAG}，无需提交" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          git commit -am "chore(deploy): test 环境镜像改为 ${TAG} [skip ci]"
-          # 两次合并挨得很近时，后一次推送会被拒；把别人的提交拉下来再推，最多三次。
-          for attempt in 1 2 3; do
+          # GITHUB_TOKEN 推的提交不触发 workflow，提交信息不带 [skip ci]：正式 tag 打在这个提交上也能触发发版。
+          git commit -am "chore(deploy): test 环境镜像改为 ${TAG}"
+          # 和别的合并或 release-image.yml 的生产回写挨得很近时，推送会被拒；把别人的提交拉下来再推，最多五次。
+          # 两条回写改的是不同文件，rebase 不会冲突；不共用 concurrency 组，免得同组排队时互相取消。
+          for attempt in 1 2 3 4 5; do
             if git push origin HEAD:main; then
               echo "- 测试环境镜像改为 \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
               exit 0
@@ -132,7 +134,7 @@ jobs:
             echo "推送被拒，第 ${attempt} 次重试"
             git pull --rebase origin main
           done
-          echo "::error::三次都没能把测试版本号推回 main"
+          echo "::error::五次都没能把测试版本号推回 main"
           exit 1
 
       - name: Notify Argo CD

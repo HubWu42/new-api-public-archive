@@ -1,17 +1,17 @@
 # LinkSail 运维
 
-本文件记录 LinkSail（本仓 new-api 的部署名）在 GoSail 集群上的部署位置、发布与回滚做法；上游通用安装说明不在这里重复。日期 tag 的格式、发布脚本的各个参数、哪些上游 workflow 已停用，见 [git.md](git.md)。集群、共享 PG 与 Redis、Argo CD、入口这些各服务共用的环境，见 GoSail 工作空间仓的 `fleet-doc/ops.md`，这里不重复；集群拓扑与「Git 里写什么、线上就跑什么」的发布方式为什么这样定，见同仓的 `fleet-doc/adr/0005-k8s-single-prod-cluster.md`。
+本文件记录 LinkSail（本仓 new-api 的部署名）在 GoSail 集群上的部署位置、发布与回滚做法；上游通用安装说明不在这里重复。日期 tag 的格式、发布脚本的各个参数、哪些上游 workflow 已停用，见 [git.md](git.md)。集群、共享 PG 与 Redis、Argo CD、入口这些各服务共用的环境，见 GoSail 工作空间仓的 `fleet-doc/ops.md`，这里不重复；集群拓扑与「Git 里写什么、线上就跑什么」的发布方式为什么这样定，见同仓的 `fleet-doc/adr/0005-k8s-single-prod-cluster.md`；测试与生产都跟 `main`、版本由 CI 回写的原因见同仓的 `fleet-doc/adr/0008-prod-follows-main-ci-writes-version.md`。
 
 ## 部署在哪
 
 | 环境 | 集群（kubeconfig 里的 context 名） | 命名空间 | Argo CD 应用名 | 跟本仓哪个分支 |
 | --- | --- | --- | --- | --- |
 | 测试 | 家里的测试集群（`gosail-test`） | `linksail` | `linksail-test` | `main` |
-| 生产 | 云上的生产集群（`gosail-prod`） | `linksail` | `linksail-prod` | `release` |
+| 生产 | 云上的生产集群（`gosail-prod`） | `linksail` | `linksail-prod` | `main` |
 
 Argo CD 是装在生产集群里的部署工具，同时管着两个集群。它的每个「应用」（Application）记着一件事：从哪个仓、哪个分支、哪个目录取部署清单，部署到哪个集群的哪个命名空间；分支上的清单一变，它就把集群改成清单写的样子。这两个应用的定义不在本仓，在 GoSail 工作空间仓的 `deploy/k8s/apps/overlays/test/services.yaml` 与 `deploy/k8s/apps/overlays/prod/services.yaml`。
 
-两个应用都开着自动同步和自我修复：用 `kubectl edit`、`kubectl scale` 在集群里直接改的东西，会被 Argo CD 改回 Git 里的样子。要改部署，就改本仓 `deploy/` 下的文件并合进对应分支。
+两个应用都开着自动同步和自我修复：用 `kubectl edit`、`kubectl scale` 在集群里直接改的东西，会被 Argo CD 改回 Git 里的样子。要改部署，就改本仓 `deploy/` 下的文件并合进 `main`。
 
 ```mermaid
 flowchart LR
@@ -19,10 +19,8 @@ flowchart LR
     DT --> AT["Argo CD 同步 linksail-test"]
     AT --> T["家里测试集群<br/>linksail.test.gosail.tech"]
 
-    PREP["release-tag.sh --prepare<br/>写 overlays/prod"] --> M["PR 合入 main"]
-    M --> TAG["推日期 tag"]
-    TAG --> RI{{"release-image.yml"}}
-    RI --> PM["promote<br/>release 分支快进到 tag"]
+    TAG["在 main 上推日期 tag"] --> RI{{"release-image.yml<br/>构建多架构镜像"}}
+    RI --> PM["promote<br/>写回 main 的 overlays/prod"]
     PM --> AP["Argo CD 同步 linksail-prod"]
     AP --> P["云上生产集群<br/>linksail.gosail.tech"]
 ```
@@ -44,7 +42,7 @@ flowchart LR
 kubectl kustomize deploy/k8s/linksail/overlays/prod
 ```
 
-两个环境的镜像版本都由脚本写，不手改：`overlays/test` 由 `deploy-test.yml` 在合并到 main 后写入，`overlays/prod` 由 `scripts/release-tag.sh --prepare` 在打 tag 前写入。唯一的例外是〈回滚〉里测试环境那一种做法。
+两个环境的镜像版本都由 CI 在镜像构建完之后写回 `main`，不手改：`overlays/test` 由 `deploy-test.yml` 在合并到 main 后写入，`overlays/prod` 由 `release-image.yml` 在推正式 tag 后写入。唯一的例外是〈回滚〉里测试环境那一种做法。
 
 普通环境变量写在 `base/deployment.yaml`（两个环境相同的）和各 overlay 的 `configMapGenerator`（随环境变的）里。kustomize 会给生成的 ConfigMap 名字加上内容哈希，所以改了 overlay 里的值，合进去之后服务会自动重启并读到新值。
 
@@ -85,46 +83,38 @@ node deploy/scripts/secrets.js diff --cluster prod --map project/new-api/deploy/
 把改动合进 `main` 就会发测试版，不用敲命令：
 
 1. `deploy-test.yml` 在 push 到 `main` 时构建 `hubwu42/new-api:main-<短 sha>`（只出 amd64，测试集群只有 amd64 节点），镜像里的版本号就是 `main-<短 sha>`。
-2. 它把这个版本写进 `deploy/k8s/linksail/overlays/test/kustomization.yaml`，以 `github-actions[bot]` 的身份提交回 `main`（提交信息带 `[skip ci]`，不会再触发自己）。
+2. 它把这个版本写进 `deploy/k8s/linksail/overlays/test/kustomization.yaml`，以 `github-actions[bot]` 的身份提交回 `main`。这个提交用 `GITHUB_TOKEN` 推送，不会再触发任何工作流。
 3. 再调 Argo CD 的 webhook，`linksail-test` 立刻同步。仓库 secret `ARGOCD_WEBHOOK_SECRET` 缺了也不丢部署，Argo CD 每 3 分钟自己轮询一次 Git。
 
 这次 push 只改了 `overlays/test` 时不构建、不改写，用于〈回滚〉里的测试环境回退。
 
 ## 发正式版
 
-镜像仓库 `hubwu42/new-api`，正式版出 `linux/amd64` 与 `linux/arm64` 两个架构。Git tag `v2026.10.8-r1` 对应镜像 `hubwu42/new-api:2026.10.8-r1`，同一次构建另刷一个 `latest`，`latest` 只给人手动拉取用，集群只认 overlay 里钉的日期版本。
+镜像仓库 `hubwu42/new-api`，正式版出 `linux/amd64` 与 `linux/arm64` 两个架构。Git tag `v2026.10.8-r1` 对应镜像 `hubwu42/new-api:2026.10.8-r1`，同一次构建另刷一个 `latest`，`latest` 只给人手动拉取用，集群只认 overlay 里写的日期版本。
 
-1. 在一条 `feat/GS-<n>-…` 分支上写好生产版本号，经 PR 合进 `main`：
+1. 在 `main` 上打 tag 并推送。打 tag 前不用改任何文件。**推正式 tag 就是上线确认**，生产没有其他人工审批，推之前由人确认：
 
    ```bash
    git switch main && git pull
    bash scripts/release-tag.sh --dry       # 只看下一版的 tag 是什么，不改任何东西
-   bash scripts/release-tag.sh --prepare   # 把下一版的镜像 tag 写进 deploy/k8s/linksail/overlays/prod
-   # 提交这个改动，开 PR，合入 main
-   ```
-
-   跨过北京时间零点会让 `--prepare` 算出的日期过期，此时重新 `--prepare`。
-
-2. 合入后在 `main` 上打 tag 并推送。**推正式 tag 就是上线确认**，生产没有其他人工审批，推之前由人确认：
-
-   ```bash
-   git switch main && git pull
-   bash scripts/release-tag.sh             # 在本地打当天的 tag；overlays/prod 钉的不是这个版本时拒绝
+   bash scripts/release-tag.sh             # 在本地打当天的 tag
    git push origin v2026.10.8-r1           # 填脚本输出的 tag；只推这一个，不用 --tags
    ```
 
-3. `release-image.yml` 接着自己跑完：
+2. `release-image.yml` 接着自己跑完：
 
    | job | 干什么 |
    | --- | --- |
-   | `verify` | `release-tag.sh --check` 校验 tag 的形状与时序；tag 必须在 `main` 上；`overlays/prod` 钉的必须就是这一版，否则在构建前停下 |
+   | `verify` | `release-tag.sh --check` 校验 tag 的形状与时序；tag 必须在 `main` 上 |
    | `build` | 两个架构各构建一次。构建前把发布标识写进仓库根的 `VERSION`，Go 的 `-X common.Version` 与前端 `VITE_REACT_APP_VERSION` 都读它 |
    | `manifest` | 合成多架构的日期 tag，正式版另刷 `latest`；再在镜像里搜一遍发布标识，搜不到就整条失败 |
-   | `promote` | 把 `release` 分支快进到 tag 所在提交，调 Argo CD 的 webhook；`linksail-prod` 随即部署 `overlays/prod` 里钉的版本 |
+   | `promote` | 把这个版本写进 `main` 的 `deploy/k8s/linksail/overlays/prod/kustomization.yaml` 并推送，调 Argo CD 的 webhook；`linksail-prod` 随即部署这一版 |
 
-`promote` 只快进、不强推：`release` 上要是有不在这个 tag 历史里的提交，推送会被拒、job 变红，等人来看。
+`promote` 推 `main` 被拒时（刚好有别的合并或测试版的写回进来）先 `git pull --rebase` 再推，最多五次，五次都失败就变红等人来看。两条写回改的是不同文件，rebase 不会冲突。
 
-**干跑**：`v2026.10.8-r1-dry.1` 这种带 `-dry.N` 的 tag 会构建并推送 `hubwu42/new-api:2026.10.8-r1-dry.1`，不刷 `latest`、不动 `release` 分支，生产不变。推干跑 tag 会消耗 CI 与镜像仓资源，同样先确认；本地 `bash scripts/release-tag.sh --dry` 完全不发布。
+镜像先构建好、才写进 `overlays/prod`，Argo CD 看到变化时镜像已经在 Docker Hub 上。tag 所在提交里的 `overlays/prod` 是上一版，生产实际跑的版本看 `main` 最新的 `overlays/prod`。
+
+**干跑**：`v2026.10.8-r1-dry.1` 这种带 `-dry.N` 的 tag 会构建并推送 `hubwu42/new-api:2026.10.8-r1-dry.1`，不刷 `latest`、不写 `overlays/prod`，生产不变。推干跑 tag 会消耗 CI 与镜像仓资源，同样先确认；本地 `bash scripts/release-tag.sh --dry` 完全不发布。
 
 上线后核对：`curl -s https://linksail.gosail.tech/api/status` 返回的 `version` 应当等于发布标识（去掉前导 `v`）。
 
@@ -164,22 +154,21 @@ kubectl --context gosail-prod -n argocd annotate application linksail-prod argoc
 
 ### 生产环境
 
-已经用过的 tag 不能复用，日期与序号不能倒退，`verify` 又要求 tag 与 `overlays/prod` 钉的版本一致，所以没法给旧版本再打一个 tag。生产回滚有两种做法，都是生产操作，由人确认目标版本后再动手：
+已经用过的 tag 不能复用，日期与序号不能倒退，所以没法给旧版本再打一个 tag。生产回滚有两种做法，都是生产操作，由人确认目标版本后再动手：
 
 **常规做法：修好或 revert 之后发一个新版本。** 在 `main` 上 revert 出问题的改动，按〈发正式版〉用新的发布标识再发一次，镜像从 revert 之后的代码重新构建。
 
-**紧急做法：把 `release` 分支指回上一个正式版本的提交。** 生产跟的是 `release` 分支，上一个 tag 的提交里 `overlays/prod` 钉的就是上一版镜像，它还在 Docker Hub 上（已发布的日期 tag 不覆盖、不删除），不需要重新构建：
+**紧急做法：手动触发 `release-image.yml`，把上一个正式版本写回 `overlays/prod`。** 已发布的日期镜像不覆盖、不删除，还在 Docker Hub 上，不需要重新构建：
 
 ```bash
-prev=v2026.10.8-r1                       # 上一个正常的正式版本
-sha=$(git rev-parse "$prev^{commit}")
-gh api -X PATCH repos/HubWu42/new-api/git/refs/heads/release -f sha="$sha" -F force=true
-kubectl --context gosail-prod -n argocd annotate application linksail-prod argocd.argoproj.io/refresh=normal --overwrite
+gh workflow run release-image.yml --repo HubWu42/new-api --ref main -f tag=v2026.10.8-r1   # 上一个正常的正式版本
 ```
+
+手动触发只能选 `main`。`verify` 核对这个 tag 存在、在 `main` 上、不是干跑 tag，并且镜像 `hubwu42/new-api:<版本>` 已在 Docker Hub 上；然后跳过 `build` 与 `manifest`，由 `promote` 把这个版本写回 `overlays/prod` 并调 webhook。镜像不在说明这个 tag 当初没发布成功，`verify` 直接失败，此时走常规做法。
 
 退回之后：
 
-- `main` 上的问题还在。修好之后照常发下一个版本：上一版的提交是新 tag 的祖先，`promote` 仍然能快进。
+- `main` 上的问题还在。修好之后照常发下一个版本，`promote` 会把新版本写回 `overlays/prod`。
 - 新版本启动时已经迁移过表结构的，旧版本会跑在新表结构上。退回前先看两个版本之间 `model/` 里的表结构有没有变化，旧版本不能接受时只走常规做法。
 - 等 Argo CD 显示 `Synced` / `Healthy` 之后，核对 `/api/status` 的 `version` 已是上一版。
 
