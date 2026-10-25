@@ -1,0 +1,25 @@
+# 灰云：保持 linksail.gosail.tech 现在的 Cloudflare 设置（2026-10-22 实测解析到源站 IP）。
+# 证书不写 secretName，由 Traefik 默认 TLSStore 里的通配证书提供。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: linksail
+  annotations:
+    external-dns.kubernetes.io/target: entry-cn.gosail.tech
+    external-dns.kubernetes.io/cloudflare-proxied: "false"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - linksail.gosail.tech
+  rules:
+    - host: linksail.gosail.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: linksail
+                port:
+                  name: http

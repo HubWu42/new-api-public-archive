@@ -1,7 +1,9 @@
 name: Release image (date tag)
 
-# 日期 tag 触发：校验 → 多架构构建 → 推 Docker Hub（不可变的日期 tag，另刷一个只作人肉拉取用的 latest）→ 钉住本版并触发 Coolify 部署。
-# 约定与调用见 docs/git.md 与 docs/deploy.md，实现与它们保持一致。
+# 日期 tag 触发：校验 → 多架构构建 → 推 Docker Hub（不可变的日期 tag，另刷一个只作人肉拉取用的 latest）
+# → 把 release 分支快进到这个 tag 并通知 Argo CD 部署生产（GoSail ADR-0005）。
+# 生产部署哪一版由 deploy/k8s/linksail/overlays/prod 决定，scripts/release-tag.sh --prepare 在打 tag 前写好它。
+# 约定与调用见 fleet-doc/git.md 与 fleet-doc/ops.md，实现与它们保持一致。
 on:
   push:
     tags:
@@ -12,7 +14,7 @@ permissions:
 
 env:
   IMAGE: hubwu42/new-api
-  COOLIFY_URL: https://coolify.gosail.tech
+  PROD_OVERLAY: deploy/k8s/linksail/overlays/prod/kustomization.yaml
 
 jobs:
   verify:
@@ -47,6 +49,23 @@ jobs:
             *-dry.*) echo "is_dry=true" >> "$GITHUB_OUTPUT" ;;
             *)       echo "is_dry=false" >> "$GITHUB_OUTPUT" ;;
           esac
+
+      # 正式 tag 所在的提交必须已经把生产覆盖层钉到本版：release 快进到这个提交后，
+      # Argo CD 部署的就是覆盖层里写的版本。钉错了就在构建前停下，不推镜像。
+      - name: Verify the production overlay pins this release
+        if: steps.tag.outputs.is_dry != 'true'
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          pinned=$(awk -v img="$IMAGE" '
+            $1 == "-" && $2 == "name:" { inside = ($3 == img); next }
+            inside && $1 == "newTag:" { print $2; exit }
+          ' "$PROD_OVERLAY")
+          if [ "$pinned" != "$IMAGE_TAG" ]; then
+            echo "::error::${PROD_OVERLAY} 钉的是 ${pinned:-<空>}，不是 ${IMAGE_TAG}；先跑 scripts/release-tag.sh --prepare 并合进 main 再打 tag"
+            exit 1
+          fi
 
   build:
     name: Build & push (${{ matrix.arch }})
@@ -145,43 +164,28 @@ jobs:
           fi
           echo "- 版本自检通过：镜像内嵌 \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
 
-  deploy:
-    name: Deploy linksail
+  promote:
+    name: Promote release branch
     needs: [verify, manifest]
     if: needs.verify.outputs.is_dry != 'true'
     runs-on: ubuntu-latest
-    env:
-      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-      COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+    permissions:
+      contents: write
     steps:
-      - name: Check Coolify credentials
-        id: gate
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 生产的 Argo CD Application 跟 release 分支。只快进、绝不强推：
+      # 被拒说明 release 上有不在这个 tag 历史里的提交，要人来看，不能覆盖。
+      - name: Fast-forward release to the tag
         run: |
           set -euo pipefail
-          if [ -n "${COOLIFY_TOKEN:-}" ] && [ -n "${COOLIFY_APP_UUID:-}" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::COOLIFY_TOKEN / COOLIFY_APP_UUID 未配齐，跳过部署（镜像已推送，可手动部署）"
-            echo "> :warning: deploy 跳过：Coolify 凭据未配齐 —— 部署还没接好。" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          git push origin "${GITHUB_SHA}:refs/heads/release"
+          echo "- release 分支快进到 \`${GITHUB_SHA::7}\`（${GITHUB_REF_NAME}）" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Pin the release on Coolify and deploy
-        if: steps.gate.outputs.ready == 'true'
-        run: |
-          set -euo pipefail
-          auth=(-H "Authorization: Bearer ${COOLIFY_TOKEN}" -H "Accept: application/json")
-
-          # linksail 是 Docker Image 型 application：先把镜像 tag 钉到本次发布，
-          # 再触发部署。这条路径 Coolify 会按 docker_registry_image_tag 真的去拉取；
-          # compose 型 service 做不到这一点（它只在本地镜像里找，2026-08-03 那次
-          # 就是重建了容器却还跑旧镜像）。
-          curl -fsS -X PATCH "${auth[@]}" -H 'Content-Type: application/json' \
-            "${COOLIFY_URL}/api/v1/applications/${COOLIFY_APP_UUID}" \
-            --data "{\"docker_registry_image_tag\":\"${{ needs.verify.outputs.image_tag }}\"}"
-
-          # /api/v1/deploy 只收 POST（GET 返 405）。
-          out=$(curl -fsS -X POST "${auth[@]}" \
-            "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=false")
-          echo "$out"
-          echo "- 已钉版本 \`${{ needs.verify.outputs.image_tag }}\` 并触发部署" >> "$GITHUB_STEP_SUMMARY"
+      - name: Notify Argo CD
+        env:
+          ARGOCD_WEBHOOK_SECRET: ${{ secrets.ARGOCD_WEBHOOK_SECRET }}
+        run: bash .github/scripts/argocd-webhook.sh release "$GITHUB_SHA"

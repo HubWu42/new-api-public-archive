@@ -1,0 +1,29 @@
+# 家里测试集群。镜像 tag 由 .github/workflows/deploy-test.yml 在每次合并到 main 后改写并提交回来。
+# PG、Redis 在本集群 data-cn 里，与生产同名；测试与生产只在库名和账号上不同（ADR-0005）。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# 生成的 ConfigMap 要和 base 里的对象在同一个命名空间，引用它的名字才会被改成带哈希的那个
+namespace: linksail
+resources:
+  - ../../base
+images:
+  - name: hubwu42/new-api
+    newTag: 2026.10.8-r2
+configMapGenerator:
+  - name: linksail-env
+    literals:
+      - DB_HOST=pg-cn-rw.data-cn.svc.cluster.local:5432
+      - DB_NAME=newapi_test
+      - REDIS_ADDR=redis.data-cn.svc.cluster.local:6379
+      - REDIS_DB=2
+patches:
+  - target:
+      kind: Ingress
+      name: linksail
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: linksail.test.gosail.tech
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: linksail.test.gosail.tech

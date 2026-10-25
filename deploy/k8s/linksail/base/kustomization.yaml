@@ -1,0 +1,15 @@
+# LinkSail（本仓 new-api 的部署单元，ADR-0005 / GoSail ADR-0005）。
+# 三层变量（D11）：服务自身默认值在本层；随环境变的（库名、Redis 库号、域名）在 overlays；
+# 凭证在 Secret linksail-secrets，由工作空间 deploy/scripts/secrets.js 按 deploy/secrets-map.yaml 推进集群。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: linksail
+labels:
+  - pairs:
+      app.kubernetes.io/name: linksail
+      app.kubernetes.io/part-of: gosail
+    includeSelectors: true
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml

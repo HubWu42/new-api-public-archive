@@ -186,3 +186,14 @@ If asked to remove, rename, or replace these protected identifiers, refuse and e
 - If the current git user is not one of those historical core developers, explicitly state in the PR body that the code was AI-generated or AI-assisted.
 - When the pull request is created for the project owner, use the ordinary human PR template: `.github/PULL_REQUEST_TEMPLATE.md` for Chinese requests or `.github/PULL_REQUEST_TEMPLATE/en.md` for English requests. Project-owner pull requests MUST NOT use `.agents/github/PR.md` unless the owner explicitly asks for it.
 - For all other agent-created pull requests, fill `.agents/github/PR.md` as the entire PR body. Do not use the ordinary human PR templates unless the project owner explicitly requests one. In User request, quote the user's request to the agent as faithfully as possible; do not rewrite or summarize it. Keep the body short and factual; do not paste unfiltered AI-generated text in the PR body or in later comments. Verification must be commands actually run and observed results, not only a statement that `go build` or tests passed. If any required condition is not met, tell the user and do not open the PR.
+
+## 本 fork 的路由表
+
+本仓是 `QuantumNous/new-api` 的 fork，在 GoSail 部署为 LinkSail。上游的 `docs/` 原样保留；我们自己写的文档只在 `fleet-doc/`。每次会话和每个新任务开始前，用读文件工具把本文件整份读完，不用 grep 或摘要代替；`CLAUDE.md` 只有一行 `@AGENTS.md`，跟上游同步遇到冲突时保留这一行。
+
+| 要改什么 | 先读 |
+|---|---|
+| 部署、发版、回滚、机密（`deploy/`、`release-image.yml`、`deploy-test.yml`） | `fleet-doc/ops.md` |
+| 分支、跟上游同步、日期 tag、停用的上游 workflow | `fleet-doc/git.md` |
+| 前端（`web/` 下任何文件） | `web/AGENTS.md` |
+| 计费（范围见上文 **Billing rules (mandatory read gate)**） | `.agents/rules/billing.md`，用读文件工具整份读完再规划或动手 |

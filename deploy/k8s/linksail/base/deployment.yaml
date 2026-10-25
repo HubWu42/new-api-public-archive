@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: linksail
+spec:
+  replicas: 1
+  # 单副本、主节点身份（NODE_TYPE 未设即 master）：滚动更新时不让新旧两份同时做主节点的定时任务
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      containers:
+        - name: linksail
+          image: hubwu42/new-api
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # 被下面的连接串引用，必须写在它们前面（Kubernetes 只替换前面已定义的变量）
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: linksail-secrets
+                  key: DB_PASSWORD
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: linksail-secrets
+                  key: REDIS_PASSWORD
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: linksail-secrets
+                  key: SESSION_SECRET
+            - name: CRYPTO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: linksail-secrets
+                  key: CRYPTO_SECRET
+            # 库地址、库名、Redis 地址与库号随环境变，来自 overlays 里的 ConfigMap linksail-env
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: linksail-env
+                  key: DB_HOST
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: linksail-env
+                  key: DB_NAME
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: linksail-env
+                  key: REDIS_ADDR
+            - name: REDIS_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: linksail-env
+                  key: REDIS_DB
+            # 角色名与库名相同（D17：每个环境一个库、一个只能访问它的账号）。
+            # 密码原样拼进 URL，所以 settings 里的库密码与 Redis 密码只用字母数字（token_urlsafe 生成后去掉 - 与 _）
+            - name: SQL_DSN
+              value: postgres://$(DB_NAME):$(DB_PASSWORD)@$(DB_HOST)/$(DB_NAME)?sslmode=disable
+            - name: REDIS_CONN_STRING
+              value: redis://:$(REDIS_PASSWORD)@$(REDIS_ADDR)/$(REDIS_DB)
+            # 库不一定和服务同机（只要求同区域，D7），所以开内存缓存与批量写，减少每个请求的往返
+            - name: MEMORY_CACHE_ENABLED
+              value: "true"
+            - name: BATCH_UPDATE_ENABLED
+              value: "true"
+            - name: SYNC_FREQUENCY
+              value: "60"
+            - name: TZ
+              value: Asia/Shanghai
+            # 大请求体（长会话、带工具结果）被掐断的问题在 Traefik 入口的 readTimeout，
+            # 那是入口层（entryPoint）的全站设置，归公共组件 traefik 单元管，这里不处理。
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            # 镜像的工作目录，日志与临时文件写在这里；数据都在 PG，不需要持久化
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}

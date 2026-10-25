@@ -1,0 +1,131 @@
+name: Deploy test (main)
+
+# 合并到 main 发测试版（GoSail ADR-0005）：构建 hubwu42/new-api:main-<短 sha> →
+# 把这个 tag 提交回 deploy/k8s/linksail/overlays/test → 通知 Argo CD 同步家里测试集群。
+# CI 不直接碰集群：集群凭证不进 GitHub，版本号留在 Git 里可以重建。
+# 正式版走 release-image.yml（日期 tag），约定见 fleet-doc/git.md。
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false
+
+env:
+  IMAGE: hubwu42/new-api
+  OVERLAY: deploy/k8s/linksail/overlays/test
+
+jobs:
+  changes:
+    name: Decide whether to build
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.diff.outputs.build }}
+      tag: ${{ steps.diff.outputs.tag }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 只改了测试覆盖层的推送（本 workflow 自己的回写，或人手改版本号）不需要再构建。
+      # GITHUB_TOKEN 推的提交本来就不会触发 workflow，这里是第二道保险。
+      - name: Diff the push
+        id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          if [ "$BEFORE" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$BEFORE" 2>/dev/null; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -qv "^${OVERLAY}/"; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "只改了 ${OVERLAY}，不构建" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build:
+    name: Build & push test image
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Dockerfile 把仓库根的 VERSION 编进二进制与前端；测试版的身份就是 main-<短 sha>。
+      - name: Write build identity into VERSION
+        env:
+          TAG: ${{ needs.changes.outputs.tag }}
+        run: printf '%s' "$TAG" > VERSION
+
+      # 测试集群只有 amd64 节点，只出 amd64；正式版仍由 release-image.yml 出多架构。
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ needs.changes.outputs.tag }}
+          cache-from: type=gha,scope=deploy-test
+          cache-to: type=gha,mode=max,scope=deploy-test
+
+  deploy-test:
+    name: Pin test overlay and notify Argo CD
+    needs: [changes, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Commit the new test image tag
+        env:
+          TAG: ${{ needs.changes.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          (cd "$OVERLAY" && kustomize edit set image "${IMAGE}=${IMAGE}:${TAG}")
+          if git diff --quiet; then
+            echo "测试覆盖层已经是 ${TAG}，无需提交" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -am "chore(deploy): test 环境镜像改为 ${TAG} [skip ci]"
+          # 两次合并挨得很近时，后一次推送会被拒；把别人的提交拉下来再推，最多三次。
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "- 测试环境镜像改为 \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "推送被拒，第 ${attempt} 次重试"
+            git pull --rebase origin main
+          done
+          echo "::error::三次都没能把测试版本号推回 main"
+          exit 1
+
+      - name: Notify Argo CD
+        env:
+          ARGOCD_WEBHOOK_SECRET: ${{ secrets.ARGOCD_WEBHOOK_SECRET }}
+        run: bash .github/scripts/argocd-webhook.sh main "$(git rev-parse HEAD)"
