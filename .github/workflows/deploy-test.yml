@@ -7,7 +7,7 @@ name: Deploy test (main)
 on:
   push:
     branches: [main]
-  # 推送没触发或要补跑时手动触发；按当前 main 构建
+  # 推送没触发或要补跑时手动触发；只认 main，见 changes 里的 Refuse non-main 一步
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,14 @@ jobs:
       build: ${{ steps.diff.outputs.build }}
       tag: ${{ steps.diff.outputs.tag }}
     steps:
+      # 手动触发可以在网页上选任意分支，而 tag 只取 main-<GITHUB_SHA>：放行的话会把别的分支
+      # 的代码当成 main 写进测试环境。这里直接失败并写明原因，比整个 job 静默跳过更容易发现。
+      - name: Refuse non-main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::deploy-test 只能在 main 上运行，当前是 ${GITHUB_REF}；手动触发时分支选 main"
+          exit 1
+
       - name: Check out
         uses: actions/checkout@v4
         with:
