@@ -8,7 +8,7 @@ resources:
   - ../../base
 images:
   - name: hubwu42/new-api
-    newTag: 2026.10.8-r2
+    newTag: 2026.10.25-r1
 configMapGenerator:
   - name: linksail-env
     literals:
