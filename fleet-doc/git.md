@@ -57,6 +57,8 @@ bash scripts/release-tag.sh
 
 ## 与上游工作流的差异
 
+这个仓是 fork。GitHub 会自动停用 fork 的工作流：Actions 页顶部提示「Workflows on this fork have been disabled」。这种停用在接口里看不出来：`gh api repos/HubWu42/new-api/actions/permissions` 的 `enabled` 仍为 true，`gh workflow list --all` 里各工作流仍是 `active`，但推送与 PR 都不再触发任何工作流。判定是否停用以 Actions 页的提示为准。重新启用要在网页 Actions 页点启用按钮；点之前先按下文逐个核对继承来的工作流会不会被我们的推送、tag 或 PR 触发，该停用的先停用。
+
 只通过 fork 的仓库设置停用以下两条，保留上游文件，减少后续 merge 冲突：
 
 | 文件 | 上游触发条件 | fork 的处理与理由 |
@@ -68,7 +70,7 @@ bash scripts/release-tag.sh
 
 | 文件 | 事件条件与处理 |
 | --- | --- |
-| `deploy-test.yml` | 我们新增：push `main` 时构建 `main-<短 sha>` 镜像、把它写回 `overlays/test` 并通知 Argo CD。不响应 tag push；写回用 `GITHUB_TOKEN` 推送，不会再次触发自己。 |
+| `deploy-test.yml` | 我们新增：push `main`，或在 `main` 上手动触发（`workflow_dispatch`，选其他分支会直接失败）时，构建 `main-<短 sha>` 镜像、把它写回 `overlays/test` 并通知 Argo CD。不响应 tag push；写回用 `GITHUB_TOKEN` 推送，不会再次触发自己。 |
 | `docker-image-branch.yml` | 仅 `workflow_dispatch`，保持启用，不由 tag push 触发。 |
 | `electron-build.yml` | push tags `*`、`!*-*`、`!*-alpha*`，另有 `workflow_dispatch`；`!*-*` 排除含 `-r1` 的日期 tag，保持启用。 |
 | `ci.yml` | `pull_request` 的 opened/synchronize/closed，不响应 tag push。 |
