@@ -9,7 +9,7 @@ resources:
 images:
 - name: hubwu42/new-api
   newName: hubwu42/new-api
-  newTag: main-bcc03eb
+  newTag: main-c64fc9e
 configMapGenerator:
 - literals:
   - DB_HOST=pg-cn-rw.data-cn.svc.cluster.local:5432
