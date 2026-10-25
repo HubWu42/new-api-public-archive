@@ -5,24 +5,25 @@ kind: Kustomization
 # 生成的 ConfigMap 要和 base 里的对象在同一个命名空间，引用它的名字才会被改成带哈希的那个
 namespace: linksail
 resources:
-  - ../../base
+- ../../base
 images:
-  - name: hubwu42/new-api
-    newTag: 2026.10.25-r1
+- name: hubwu42/new-api
+  newName: hubwu42/new-api
+  newTag: 2026.10.25-r2
 configMapGenerator:
-  - name: linksail-env
-    literals:
-      - DB_HOST=pg-cn-rw.data-cn.svc.cluster.local:5432
-      - DB_NAME=newapi_prod
-      - REDIS_ADDR=redis.data-cn.svc.cluster.local:6379
-      - REDIS_DB=1
-patches:
+- literals:
+  - DB_HOST=pg-cn-rw.data-cn.svc.cluster.local:5432
+  - DB_NAME=newapi_prod
+  - REDIS_ADDR=redis.data-cn.svc.cluster.local:6379
+  - REDIS_DB=1
+  name: linksail-env
   # 国内区域：服务只连本区域的库（D1/D7）
-  - target:
-      kind: Deployment
-      name: linksail
-    patch: |-
-      - op: add
-        path: /spec/template/spec/nodeSelector
-        value:
-          region: cn
+patches:
+- patch: |-
+    - op: add
+      path: /spec/template/spec/nodeSelector
+      value:
+        region: cn
+  target:
+    kind: Deployment
+    name: linksail
